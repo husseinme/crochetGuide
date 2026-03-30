@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --surface: 255 255 255;
+  --surface-elevated: 252 252 252;
+  --border: 228 232 236;
+  --text: 17 24 39;
+  --muted: 107 114 128;
+  --muted-strong: 75 85 99;
+  --accent: 24 28 34;
+  --accent-text: 248 250 252;
+  --track: 239 241 244;
+  --fill: 120 128 140;
+  --overlay: 15 23 42 / 0.18;
+}
+
+.dark {
+  color-scheme: dark;
+  --surface: 25 28 31;
+  --surface-elevated: 31 35 39;
+  --border: 58 63 69;
+  --text: 242 245 247;
+  --muted: 155 164 174;
+  --muted-strong: 200 205 212;
+  --accent: 236 239 243;
+  --accent-text: 24 28 31;
+  --track: 46 51 57;
+  --fill: 145 154 165;
+  --overlay: 0 0 0 / 0.45;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  font-family: Inter, sans-serif;
+  background: rgb(var(--surface));
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+textarea,
+input,
+button {
+  font: inherit;
+}
+
+button {
+  touch-action: manipulation;
+}
+
+::selection {
+  background: rgba(100, 116, 139, 0.18);
+}
