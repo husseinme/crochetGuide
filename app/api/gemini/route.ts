@@ -13,9 +13,16 @@ export async function POST(req: Request) {
       "Input size:",
       patternText.length,
     );
-    console.info("[Gemini API Route] Starting Gemini request");
+    const t0 = Date.now();
+    const logPhase = (label: string) => {
+      const elapsed = Date.now() - t0;
+      console.info(`[Gemini API Route] ${label} +${elapsed}ms`);
+    };
+
+    logPhase("Request received");
+    logPhase("Starting Gemini request");
     const payload = await generateCrochetProject(patternText);
-    console.info("[Gemini API Route] Gemini request succeeded");
+    logPhase("Gemini request succeeded");
     return NextResponse.json(payload);
   } catch (error) {
     console.error("[Gemini API Route] Error:", error);

@@ -15,7 +15,6 @@ const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const DEFAULT_MAX_RETRIES = 2;
 const REQUEST_TIMEOUT_MS = 12000;
-const MAX_PATTERN_CHARS = 8000;
 
 const CROCHET_PROJECT_SCHEMA = {
   type: "object",
@@ -211,24 +210,8 @@ const dedupeConsecutive = <T>(items: T[], key: (item: T) => string): T[] => {
 
 const preprocessPattern = (patternText: string): { text: string; length: number } => {
   const trimmed = patternText.trim();
-  const collapsedBlankLines = trimmed
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line, idx, arr) => !(line === "" && idx > 0 && arr[idx - 1] === ""))
-    .join("\n");
-
-  const dedupedLines: string[] = [];
-  let lastLine = "";
-  collapsedBlankLines.split(/\r?\n/).forEach((line) => {
-    if (line !== lastLine) {
-      dedupedLines.push(line);
-      lastLine = line;
-    }
-  });
-
-  const deduped = dedupedLines.join("\n");
-  const capped = deduped.length > MAX_PATTERN_CHARS ? deduped.slice(0, MAX_PATTERN_CHARS) : deduped;
-  return { text: capped, length: capped.length };
+  // Keep full text; only trim outer whitespace.
+  return { text: trimmed, length: trimmed.length };
 };
 
 const normalizeInstruction = (
@@ -543,6 +526,11 @@ export async function generateCrochetProject(
   patternText: string,
 ): Promise<{ project: GeneratedCrochetProject; generation: GenerationResult }> {
   const { text: trimmedPattern, length: inputLength } = preprocessPattern(patternText);
+  const t0 = Date.now();
+  const logPhase = (label: string) => {
+    const elapsed = Date.now() - t0;
+    console.info(`[Gemini] ${label} +${elapsed}ms`);
+  };
 
   const localPayload = (
     status: GenerationResult["status"],
@@ -564,9 +552,12 @@ export async function generateCrochetProject(
     return localPayload("parse_fallback", "Generated locally because the pattern was empty.", "Empty input");
   }
 
+  logPhase(`Preprocess finished. Input size: ${inputLength}`);
+
   // If running on the client, call the API route so the key stays server-side.
   if (typeof window !== "undefined") {
     try {
+      logPhase("Client calling /api/gemini");
       const res = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -577,6 +568,7 @@ export async function generateCrochetProject(
       if (!data?.project || !data?.generation) {
         throw new Error("Gemini API route returned unexpected shape");
       }
+      logPhase("Client call succeeded");
       return data;
     } catch (err) {
       console.error("[Gemini] Client call failed", err);
@@ -609,6 +601,8 @@ export async function generateCrochetProject(
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+       logPhase(`Attempt ${attempt + 1}: Gemini request start`);
+
       const response = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -632,15 +626,19 @@ export async function generateCrochetProject(
       });
 
       clearTimeout(timeout);
+      logPhase(`Attempt ${attempt + 1}: Gemini response received`);
       if (!response.ok) throw new Error(`Gemini API request failed with status ${response.status}.`);
       const payload = (await response.json()) as unknown;
+      logPhase(`Attempt ${attempt + 1}: Gemini payload parsed`);
       const responseText = extractTextResponse(payload);
       if (!responseText) {
         return localPayload("empty_ai_response", "Generated locally because Gemini returned an empty response.");
       }
       try {
+        logPhase(`Attempt ${attempt + 1}: Parsing project start`);
         const { project, usedFallback } = parseAndValidateGeneratedProject(responseText, trimmedPattern);
         if (usedFallback) {
+          logPhase(`Attempt ${attempt + 1}: Parsed with fallback`);
           return buildGenerationPayload(project, {
             source: "local",
             status: "parse_fallback",
@@ -648,6 +646,7 @@ export async function generateCrochetProject(
             debug: "Validation failed; used local parser",
           });
         }
+        logPhase(`Attempt ${attempt + 1}: Parsing finished successfully`);
         return buildGenerationPayload(project, {
           source: "gemini",
           status: "success",
