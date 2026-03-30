@@ -1,8 +1,15 @@
-import type { Project } from "@/types/project";
+import type { Project, GenerationResult } from "@/types/project";
 import { calculatePercentDone } from "@/lib/projectUtils";
 import { parsePattern } from "@/lib/parser";
 
 const now = new Date();
+
+const mockGeneration = (message: string): GenerationResult => ({
+  source: "local",
+  status: "parse_fallback",
+  message,
+  output: message,
+});
 
 const makeProject = (
   id: string,
@@ -36,6 +43,7 @@ const makeProject = (
     },
     hasStarted: true,
     startedSections: {},
+    generation: mockGeneration("Generated locally (mock data)"),
     elapsedSeconds: 0,
     timerStartedAt: null,
     activeSessionStartedAt: null,
