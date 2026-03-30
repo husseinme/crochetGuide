@@ -22,7 +22,9 @@ export async function POST(req: Request) {
     logPhase("Request received");
     logPhase("Starting Gemini request");
     const payload = await generateCrochetProject(patternText);
-    logPhase("Gemini request succeeded");
+    logPhase(
+      `Gemini route completed. source=${payload.generation.source} status=${payload.generation.status}`,
+    );
     return NextResponse.json(payload);
   } catch (error) {
     console.error("[Gemini API Route] Error:", error);
