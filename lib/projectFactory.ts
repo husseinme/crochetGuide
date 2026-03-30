@@ -1,7 +1,7 @@
 import { generateCrochetProject } from "@/lib/gemini";
 import { inferProjectName } from "@/lib/naming";
 import { flattenPartsToRows } from "@/lib/projectUtils";
-import type { GeneratedCrochetProject, Project } from "@/types/project";
+import type { GeneratedCrochetProject, Project, GenerationResult } from "@/types/project";
 
 const createProjectId = () =>
   `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -14,7 +14,7 @@ export async function buildProjectFromPattern(
   existingProjectCount: number,
 ): Promise<Project> {
   const trimmedPattern = patternText.trim();
-  const generated = await generateCrochetProject(trimmedPattern);
+  const { project: generated, generation } = await generateCrochetProject(trimmedPattern);
   const parsedRows = resolveRows(generated);
   const now = new Date().toISOString();
 
@@ -24,6 +24,7 @@ export async function buildProjectFromPattern(
       generated.projectName.trim() || inferProjectName(trimmedPattern, existingProjectCount),
     originalPatternText: trimmedPattern,
     summary: generated.summary,
+    generation: generation as GenerationResult,
     hasStarted: false,
     startedSections: {},
     elapsedSeconds: 0,

@@ -22,8 +22,16 @@ import {
 } from "@/lib/projectUtils";
 import { formatElapsedTime, getCurrentElapsedSeconds, nowIso } from "@/lib/timer";
 import { getProjectById, updateProject } from "@/lib/storage";
-import type { Project } from "@/types/project";
+import type { GenerationResult, Project } from "@/types/project";
 import { useDebounce } from "@/lib/useDebounce";
+
+const generationLabel = (generation: GenerationResult) => {
+  if (generation.status === "success") return "Generated with Gemini";
+  if (generation.status === "missing_api_key") return "Generated locally (missing API key)";
+  if (generation.status === "empty_ai_response") return "Generated locally (empty AI response)";
+  if (generation.status === "gemini_error") return "Generated locally (Gemini error)";
+  return "Generated locally (parse fallback)";
+};
 
 export default function ProjectPage() {
   const params = useParams<{ id: string }>();
@@ -244,6 +252,7 @@ export default function ProjectPage() {
         <ProjectSummary
           summary={project.summary}
           projectName={project.name}
+          generation={project.generation}
           onStart={startProject}
         />
       ) : shouldShowSectionIntro() && currentPart ? (
@@ -262,10 +271,19 @@ export default function ProjectPage() {
             }
             repeatLabel={
               currentRow.repeatTotal && currentRow.repeatIndex
-                ? `Repeat ${currentRow.repeatIndex} of ${currentRow.repeatTotal}`
-                : null
+              ? `Repeat ${currentRow.repeatIndex} of ${currentRow.repeatTotal}`
+              : null
             }
           />
+          {project.generation ? (
+            <div className="mt-3 rounded-xl border border-border bg-surface px-3 py-2 text-left">
+              <p className="text-xs font-semibold text-text">{generationLabel(project.generation)}</p>
+              <p className="text-xs text-muted">{project.generation.message}</p>
+              {project.generation.debug ? (
+                <p className="mt-1 text-[11px] text-muted">Debug: {project.generation.debug}</p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="mt-4 text-center text-sm text-muted">
             Row {project.currentRow} / {project.totalRows} · {calculateRowsLeft(project)} rows left
           </div>

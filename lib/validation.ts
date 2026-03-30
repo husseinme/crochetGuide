@@ -8,6 +8,7 @@ import type {
   ProjectSummary,
   ProjectTools,
   YarnColor,
+  GenerationResult,
 } from "@/types/project";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -73,6 +74,20 @@ const isProjectSummary = (value: unknown): value is ProjectSummary =>
   Array.isArray(value.notes) &&
   value.notes.every((item) => typeof item === "string");
 
+const isGenerationResult = (value: unknown): value is GenerationResult =>
+  isRecord(value) &&
+  (value.source === "gemini" || value.source === "local") &&
+  [
+    "success",
+    "missing_api_key",
+    "empty_ai_response",
+    "gemini_error",
+    "parse_fallback",
+  ].includes(value.status as string) &&
+  typeof value.message === "string" &&
+  typeof value.output === "string" &&
+  (value.debug === undefined || typeof value.debug === "string");
+
 export const isGeneratedCrochetProject = (
   value: unknown,
 ): value is GeneratedCrochetProject =>
@@ -88,6 +103,7 @@ export const isProject = (value: unknown): value is Project =>
   typeof value.name === "string" &&
   typeof value.originalPatternText === "string" &&
   isProjectSummary(value.summary) &&
+  (value.generation === undefined || isGenerationResult(value.generation)) &&
   typeof value.hasStarted === "boolean" &&
   isRecord(value.startedSections) &&
   (value.parts === null ||
@@ -134,6 +150,14 @@ export const sanitizeProject = (project: Project): Project => {
   return {
     ...project,
     summary: project.summary ?? fallbackSummary,
+    generation:
+      project.generation ??
+      ({
+        source: "local",
+        status: "parse_fallback",
+        message: "Generated locally (legacy project)",
+        output: project.originalPatternText ?? "",
+      } as GenerationResult),
     hasStarted: project.hasStarted ?? false,
     startedSections: project.startedSections ?? {},
     elapsedSeconds: project.elapsedSeconds ?? 0,

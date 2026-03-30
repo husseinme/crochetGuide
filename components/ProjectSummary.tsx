@@ -1,13 +1,38 @@
-import type { ProjectSummary, YarnColor } from "@/types/project";
+import type { GenerationResult, ProjectSummary, YarnColor } from "@/types/project";
 import { ColorText } from "@/components/ColorText";
 
 type ProjectSummaryProps = {
   summary: ProjectSummary;
   projectName: string;
+  generation?: GenerationResult;
   onStart: () => void;
 };
 
-export function ProjectSummary({ summary, projectName, onStart }: ProjectSummaryProps) {
+const generationBadge = (generation?: GenerationResult) => {
+  if (!generation) return null;
+  const stateLabel =
+    generation.status === "success"
+      ? "Generated with Gemini"
+      : generation.status === "missing_api_key"
+        ? "Generated locally (missing API key)"
+        : generation.status === "empty_ai_response"
+          ? "Generated locally (empty AI response)"
+          : generation.status === "gemini_error"
+            ? "Generated locally (Gemini error)"
+            : "Generated locally (parse fallback)";
+
+  return (
+    <div className="mt-3 rounded-xl border border-border bg-surface px-3 py-2 text-left">
+      <p className="text-xs font-semibold text-text">{stateLabel}</p>
+      <p className="text-xs text-muted">{generation.message}</p>
+      {generation.debug ? (
+        <p className="mt-1 text-[11px] text-muted">Debug: {generation.debug}</p>
+      ) : null}
+    </div>
+  );
+};
+
+export function ProjectSummary({ summary, projectName, onStart, generation }: ProjectSummaryProps) {
   return (
     <div className="mx-auto max-w-2xl rounded-[1.25rem] border border-border bg-surfaceElevated p-6 shadow-panel sm:p-8">
       <div className="space-y-2 text-center">
@@ -22,6 +47,8 @@ export function ProjectSummary({ summary, projectName, onStart }: ProjectSummary
           <p className="text-sm text-muted">Difficulty: {summary.difficulty}</p>
         ) : null}
       </div>
+
+      {generationBadge(generation)}
 
       <p className="mt-4 text-base leading-7 text-muted">
         <ColorText text={summary.description} colors={summary.tools.colors} />

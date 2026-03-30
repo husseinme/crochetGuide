@@ -8,16 +8,10 @@ export async function POST(req: Request) {
     const body = await req.json();
     const patternText = typeof body?.patternText === "string" ? body.patternText : "";
     console.info("[Gemini API Route] Has key:", Boolean(process.env.GEMINI_API_KEY));
-    if (!process.env.GEMINI_API_KEY) {
-      return NextResponse.json(
-        { error: "Missing Gemini key on server" },
-        { status: 500 },
-      );
-    }
     console.info("[Gemini API Route] Starting Gemini request");
-    const project = await generateCrochetProject(patternText);
+    const payload = await generateCrochetProject(patternText);
     console.info("[Gemini API Route] Gemini request succeeded");
-    return NextResponse.json(project);
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("[Gemini API Route] Error:", error);
     return NextResponse.json(

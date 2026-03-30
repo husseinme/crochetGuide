@@ -4,6 +4,7 @@ import { isGeneratedCrochetProject } from "@/lib/validation";
 import { splitCompoundInstruction, capitalizeInstruction, normalizeInstructionList } from "@/lib/text";
 import type {
   GeneratedCrochetProject,
+  GenerationResult,
   ParsedInstruction,
   ParsedPart,
   ParsedRow,
@@ -245,6 +246,19 @@ Return one final JSON object only.`;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const dedupeConsecutive = <T>(items: T[], key: (item: T) => string): T[] => {
+  const result: T[] = [];
+  let last = "";
+  items.forEach((item) => {
+    const k = key(item).trim().toLowerCase();
+    if (k && k !== last) {
+      result.push(item);
+      last = k;
+    }
+  });
+  return result;
+};
+
 const normalizeInstruction = (
   instruction: any,
   fallbackId: string,
@@ -335,7 +349,7 @@ const normalizeRow = (row: Partial<ParsedRow>, indexOffset = 0): ParsedRow => {
     originalRowText || `Row ${rowNumber}`,
   );
 
-  const instructions =
+  const instructionsRaw =
     normalizedTexts.length === expanded.length
       ? expanded.map((item, i) => ({
           ...item,
@@ -349,6 +363,8 @@ const normalizeRow = (row: Partial<ParsedRow>, indexOffset = 0): ParsedRow => {
           text: { human: text, abbreviated: text },
           originalText: text,
         }));
+
+  const instructions = dedupeConsecutive(instructionsRaw, (i) => i.text.human);
 
   return {
     rowNumber,
@@ -383,14 +399,17 @@ const normalizePart = (part: Partial<ParsedPart>, index: number): ParsedPart => 
   };
 };
 
-const buildFallbackProject = (patternText: string): GeneratedCrochetProject => {
+const buildFallbackProject = (
+  patternText: string,
+  description = "Generated locally because AI response was unavailable.",
+): GeneratedCrochetProject => {
   const rows = parsePattern(patternText).map((row, idx) => normalizeRow(row, idx));
 
   return {
     projectName: inferProjectName(patternText, 0),
     summary: {
       title: inferProjectName(patternText, 0),
-      description: "Generated locally because AI response was unavailable.",
+      description,
       difficulty: null,
       finishedSize: null,
       tools: {
@@ -407,6 +426,17 @@ const buildFallbackProject = (patternText: string): GeneratedCrochetProject => {
     rows,
   };
 };
+
+const buildGenerationPayload = (
+  project: GeneratedCrochetProject,
+  generation: Omit<GenerationResult, "output"> & { output?: string },
+) => ({
+  project,
+  generation: {
+    ...generation,
+    output: generation.output ?? JSON.stringify(project),
+  },
+});
 
 const extractTextResponse = (payload: unknown): string | null => {
   if (
@@ -445,7 +475,7 @@ const extractTextResponse = (payload: unknown): string | null => {
 const parseAndValidateGeneratedProject = (
   rawText: string,
   patternText: string,
-): GeneratedCrochetProject => {
+): { project: GeneratedCrochetProject; usedFallback: boolean } => {
   console.log("Gemini raw text:", rawText);
 
   let parsed: any;
@@ -523,14 +553,14 @@ const parseAndValidateGeneratedProject = (
   };
 
   if (!isGeneratedCrochetProject(result)) {
-    return buildFallbackProject(patternText);
+    return { project: buildFallbackProject(patternText), usedFallback: true };
   }
 
   if (!result.parts && (!result.rows || result.rows.length === 0)) {
-    return buildFallbackProject(patternText);
+    return { project: buildFallbackProject(patternText), usedFallback: true };
   }
 
-  return result;
+  return { project: result, usedFallback: false };
 };
 
 const readApiKey = () => process.env.GEMINI_API_KEY || "";
@@ -539,9 +569,28 @@ export const hasGeminiApiKey = (): boolean => Boolean(readApiKey());
 
 export async function generateCrochetProject(
   patternText: string,
-): Promise<GeneratedCrochetProject> {
+): Promise<{ project: GeneratedCrochetProject; generation: GenerationResult }> {
   const trimmedPattern = patternText.trim();
-  if (!trimmedPattern) return buildFallbackProject(patternText);
+
+  const localPayload = (
+    status: GenerationResult["status"],
+    message: string,
+    debug?: string,
+  ) =>
+    buildGenerationPayload(
+      buildFallbackProject(trimmedPattern, message),
+      {
+        source: "local",
+        status,
+        message,
+        debug,
+        output: trimmedPattern,
+      },
+    );
+
+  if (!trimmedPattern) {
+    return localPayload("parse_fallback", "Generated locally because the pattern was empty.", "Empty input");
+  }
 
   // If running on the client, call the API route so the key stays server-side.
   if (typeof window !== "undefined") {
@@ -552,17 +601,26 @@ export async function generateCrochetProject(
         body: JSON.stringify({ patternText: trimmedPattern }),
       });
       if (!res.ok) throw new Error(`Gemini API route failed: ${res.status}`);
-      const data = (await res.json()) as GeneratedCrochetProject;
+      const data = (await res.json()) as { project: GeneratedCrochetProject; generation: GenerationResult };
+      if (!data?.project || !data?.generation) {
+        throw new Error("Gemini API route returned unexpected shape");
+      }
       return data;
     } catch (err) {
       console.error("[Gemini] Client call failed", err);
-      return buildFallbackProject(trimmedPattern);
+      return localPayload(
+        "gemini_error",
+        "Generated locally because Gemini request failed.",
+        err instanceof Error ? err.message : "Unknown client error",
+      );
     }
   }
 
   // Server-side direct call with secret key.
   const apiKey = readApiKey();
-  if (!apiKey) return buildFallbackProject(trimmedPattern);
+  if (!apiKey) {
+    return localPayload("missing_api_key", "Generated locally because API key is missing.");
+  }
 
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt += 1) {
@@ -591,9 +649,25 @@ export async function generateCrochetProject(
       if (!response.ok) throw new Error(`Gemini API request failed with status ${response.status}.`);
       const payload = (await response.json()) as unknown;
       const responseText = extractTextResponse(payload);
-      if (!responseText) throw new Error("Gemini response did not contain JSON text.");
+      if (!responseText) {
+        return localPayload("empty_ai_response", "Generated locally because Gemini returned an empty response.");
+      }
       try {
-        return parseAndValidateGeneratedProject(responseText, trimmedPattern);
+        const { project, usedFallback } = parseAndValidateGeneratedProject(responseText, trimmedPattern);
+        if (usedFallback) {
+          return buildGenerationPayload(project, {
+            source: "local",
+            status: "parse_fallback",
+            message: "Generated locally because the AI response could not be parsed.",
+            debug: "Validation failed; used local parser",
+          });
+        }
+        return buildGenerationPayload(project, {
+          source: "gemini",
+          status: "success",
+          message: "Generated with Gemini",
+          debug: undefined,
+        });
       } catch (error) {
         console.error("[Gemini] Parse error. raw responseText length:", responseText.length);
         throw error;
@@ -609,5 +683,9 @@ export async function generateCrochetProject(
   }
 
   if (lastError) console.error(lastError);
-  return buildFallbackProject(trimmedPattern);
+  return localPayload(
+    "gemini_error",
+    "Generated locally because Gemini request failed.",
+    lastError?.message,
+  );
 }

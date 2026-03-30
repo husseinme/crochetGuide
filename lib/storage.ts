@@ -94,6 +94,7 @@ export const createProject = (project: Project): Project => {
     timerStartedAt: project.timerStartedAt ?? null,
     isTimerRunning: project.isTimerRunning ?? false,
     completedAt: project.completedAt ?? null,
+    generation: project.generation,
   };
 
   saveProjects(sortProjects([normalizedProject, ...projects]));

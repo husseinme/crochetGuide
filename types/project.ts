@@ -3,6 +3,19 @@ export type InstructionText = {
   abbreviated: string;
 };
 
+export type GenerationResult = {
+  source: "gemini" | "local";
+  status:
+    | "success"
+    | "missing_api_key"
+    | "empty_ai_response"
+    | "gemini_error"
+    | "parse_fallback";
+  message: string;
+  debug?: string;
+  output: string;
+};
+
 export type ParsedInstruction = {
   id: string;
   text: InstructionText;
@@ -66,6 +79,7 @@ export type Project = {
   name: string;
   originalPatternText: string;
   summary: ProjectSummary;
+  generation: GenerationResult;
   hasStarted: boolean;
   startedSections: Record<string, boolean>;
   elapsedSeconds: number;
