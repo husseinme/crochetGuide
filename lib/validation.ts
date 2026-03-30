@@ -82,6 +82,7 @@ const isGenerationResult = (value: unknown): value is GenerationResult =>
     "missing_api_key",
     "empty_ai_response",
     "gemini_error",
+    "gemini_timeout",
     "parse_fallback",
   ].includes(value.status as string) &&
   typeof value.message === "string" &&

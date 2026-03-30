@@ -7,7 +7,12 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const patternText = typeof body?.patternText === "string" ? body.patternText : "";
-    console.info("[Gemini API Route] Has key:", Boolean(process.env.GEMINI_API_KEY));
+    console.info(
+      "[Gemini API Route] Has key:",
+      Boolean(process.env.GEMINI_API_KEY),
+      "Input size:",
+      patternText.length,
+    );
     console.info("[Gemini API Route] Starting Gemini request");
     const payload = await generateCrochetProject(patternText);
     console.info("[Gemini API Route] Gemini request succeeded");

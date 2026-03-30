@@ -19,7 +19,9 @@ const generationBadge = (generation?: GenerationResult) => {
           ? "Generated locally (empty AI response)"
           : generation.status === "gemini_error"
             ? "Generated locally (Gemini error)"
-            : "Generated locally (parse fallback)";
+            : generation.status === "gemini_timeout"
+              ? "Generated locally (Gemini timeout)"
+              : "Generated locally (parse fallback)";
 
   return (
     <div className="mt-3 rounded-xl border border-border bg-surface px-3 py-2 text-left">

@@ -14,6 +14,8 @@ import type {
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const DEFAULT_MAX_RETRIES = 2;
+const REQUEST_TIMEOUT_MS = 12000;
+const MAX_PATTERN_CHARS = 8000;
 
 const CROCHET_PROJECT_SCHEMA = {
   type: "object",
@@ -179,70 +181,18 @@ const CROCHET_PROJECT_SCHEMA = {
   required: ["projectName", "summary", "parts", "rows"],
 } as const;
 
-const GEMINI_PROMPT = `You are converting a raw crochet pattern into structured project JSON.
+const GEMINI_PROMPT = `Convert this crochet pattern into structured JSON.
 
-Return STRICT JSON only.
-No markdown.
-No explanation.
-No extra text.
+Return JSON only (no markdown). Keys required: projectName, summary, parts or rows, repeat metadata, instructions with text.human and text.abbreviated.
 
-Goal:
-Take the raw crochet pattern and return structured JSON that includes:
-- a concise project summary for the overview screen with tools and colors
-- real named pattern parts only if they actually exist in the pattern
-- rows inside each part
-- human-readable checklist instructions
-- expanded repeated rows so each row exists explicitly
-- repeat countdown metadata per row (repeatGroupId, repeatIndex, repeatTotal)
-- each instruction is a complete, checkbox-ready action with no orphan fragments
-
-Important:
-Do NOT invent generic labels like Section 1, Section 2, Part A, Part B.
-Only create grouped parts when the pattern clearly contains real labeled components such as Head, Body, Tentacles, Border, Arms, Legs, Ears, Tail, Wings, Assembly, or Finishing.
-If no real named parts are clearly present, return the project as a single ungrouped row list.
-
-Filtering:
-- Remove copyright text, disclaimers, links, tutorials, image references, duplicate language sections, and general tips not needed for execution.
-- Keep project title, tools/materials, execution notes, and the actual crochet instructions only.
-
-Part detection rules:
-- Detect real named pattern components only when they are explicitly present or strongly implied by the pattern.
-- Do NOT treat Materials, Notes, Abbreviations, Tips, Tutorials, Copyright, or video links as parts.
-- Ignore duplicate language versions and keep only the main relevant pattern language.
-
-Row rules:
-- Detect rows using labels like Row 1, Round 1, R1, and 1.
-- Split combined row ranges like 4-5. sc around into row 4 and row 5.
-- Preserve order exactly.
-- If the pattern says to repeat rows or to repeat for N rows, expand those into individual rows in the final timeline. Include repeat metadata on each expanded row: repeatGroupId (string), repeatIndex (1-based), repeatTotal.
-- If repeat counts are unclear, do not invent them; leave repeat metadata null and keep rows unexpanded.
-
-Instruction rules:
-- Convert crochet abbreviations into clear, beginner-friendly instructions using the full pattern context.
-- Each instruction must be a complete sentence or action phrase that stands on its own; never return orphaned words or partial phrases.
-- Do not split an instruction if it would create incomplete fragments. Prefer fewer complete checklist items over many broken ones.
-- Interpret symbolic repeat notation (e.g., * 2 sc in next st, sc in next 2 sts; rep from * around) and rewrite it into readable repeat instructions. Treat the whole repeat as one action when clarity requires it.
-- For every instruction, return both text.human (clear rewrite) and text.abbreviated (concise crochet shorthand).
-- Examples: sc -> single crochet, inc -> increase, dec or sc2tog -> decrease, ch -> chain, sl st -> slip stitch, dc -> double crochet, hdc -> half double crochet, BLO -> work in the back loops only, FLO -> work in the front loops only, mr -> magic ring.
-- Examples: sc 3 -> Make 3 single crochets, inc -> Increase (make 2 stitches in the same stitch), sc2tog x9 -> Decrease 9 times.
-- Keep instruction text beginner-friendly.
-- Do not use abbreviations as the main visible text in human; store them in text.abbreviated.
-- Do not invent missing logic.
-- Preserve original meaning.
-
-Stitch count rules:
-- Extract stitch count if present, such as (24), 24 sts, or total 24.
-- If not present, set stitchCount to null.
-
-Edge cases:
-- If the pattern is messy, still produce usable output.
-- If no rows are clearly found, fall back to splitting by lines.
-- If a row has no clear instructions, create one instruction using the original row text.
-- If no real named parts are found, set parts to null and use rows.
-- If expanded repeats cannot be determined safely, leave repeat metadata null and avoid inventing counts.
-
-Use ids that are stable within the project, like row-1-step-1 or head-row-3-step-2.
-Return one final JSON object only.`;
+Rules:
+- Only create parts when the pattern names them (Head, Body, Arms, Border, Assembly, etc.). Else set parts=null and use rows.
+- Expand row ranges and repeats when counts are clear; include repeatGroupId, repeatIndex, repeatTotal.
+- Each instruction must be a complete, standalone action; no orphan fragments. Use concise human text and an abbreviated crochet shorthand.
+- Remove non-pattern filler (copyright, links, tutorials, duplicate languages).
+- Extract stitch counts when present; otherwise null.
+- If parsing fails, keep rows as best-effort line splits.
+`;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -257,6 +207,28 @@ const dedupeConsecutive = <T>(items: T[], key: (item: T) => string): T[] => {
     }
   });
   return result;
+};
+
+const preprocessPattern = (patternText: string): { text: string; length: number } => {
+  const trimmed = patternText.trim();
+  const collapsedBlankLines = trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line, idx, arr) => !(line === "" && idx > 0 && arr[idx - 1] === ""))
+    .join("\n");
+
+  const dedupedLines: string[] = [];
+  let lastLine = "";
+  collapsedBlankLines.split(/\r?\n/).forEach((line) => {
+    if (line !== lastLine) {
+      dedupedLines.push(line);
+      lastLine = line;
+    }
+  });
+
+  const deduped = dedupedLines.join("\n");
+  const capped = deduped.length > MAX_PATTERN_CHARS ? deduped.slice(0, MAX_PATTERN_CHARS) : deduped;
+  return { text: capped, length: capped.length };
 };
 
 const normalizeInstruction = (
@@ -570,7 +542,7 @@ export const hasGeminiApiKey = (): boolean => Boolean(readApiKey());
 export async function generateCrochetProject(
   patternText: string,
 ): Promise<{ project: GeneratedCrochetProject; generation: GenerationResult }> {
-  const trimmedPattern = patternText.trim();
+  const { text: trimmedPattern, length: inputLength } = preprocessPattern(patternText);
 
   const localPayload = (
     status: GenerationResult["status"],
@@ -625,16 +597,28 @@ export async function generateCrochetProject(
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt += 1) {
     try {
-      console.info("[Gemini] Server request attempt", attempt + 1, "Has key:", Boolean(apiKey));
+      console.info(
+        "[Gemini] Server request attempt",
+        attempt + 1,
+        "Has key:",
+        Boolean(apiKey),
+        "Input size:",
+        inputLength,
+      );
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
       const response = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           contents: [
             {
               parts: [
                 {
-                  text: `${GEMINI_PROMPT}\n\nRaw crochet pattern:\n${trimmedPattern}`,
+                  text: `${GEMINI_PROMPT}\n\nPattern:\n${trimmedPattern}`,
                 },
               ],
             },
@@ -646,6 +630,8 @@ export async function generateCrochetProject(
           },
         }),
       });
+
+      clearTimeout(timeout);
       if (!response.ok) throw new Error(`Gemini API request failed with status ${response.status}.`);
       const payload = (await response.json()) as unknown;
       const responseText = extractTextResponse(payload);
@@ -673,6 +659,14 @@ export async function generateCrochetProject(
         throw error;
       }
     } catch (error) {
+      if ((error as any)?.name === "AbortError") {
+        console.error("[Gemini] Timeout attempt", attempt + 1);
+        return localPayload(
+          "gemini_timeout",
+          "Generated locally because the Gemini request timed out.",
+          "Gemini request exceeded timeout",
+        );
+      }
       lastError = error instanceof Error ? error : new Error("Unknown Gemini error");
       console.error("[Gemini] Error attempt", attempt + 1, error);
       if (attempt < DEFAULT_MAX_RETRIES) {

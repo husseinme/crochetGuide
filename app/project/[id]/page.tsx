@@ -30,6 +30,7 @@ const generationLabel = (generation: GenerationResult) => {
   if (generation.status === "missing_api_key") return "Generated locally (missing API key)";
   if (generation.status === "empty_ai_response") return "Generated locally (empty AI response)";
   if (generation.status === "gemini_error") return "Generated locally (Gemini error)";
+  if (generation.status === "gemini_timeout") return "Generated locally (Gemini timeout)";
   return "Generated locally (parse fallback)";
 };
 

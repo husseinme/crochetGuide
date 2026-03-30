@@ -10,6 +10,7 @@ export type GenerationResult = {
     | "missing_api_key"
     | "empty_ai_response"
     | "gemini_error"
+    | "gemini_timeout"
     | "parse_fallback";
   message: string;
   debug?: string;
