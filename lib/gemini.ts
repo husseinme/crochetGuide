@@ -1,7 +1,8 @@
 import { inferProjectName } from "@/lib/naming";
-import { parsePattern } from "@/lib/parser";
 import { isGeneratedCrochetProject } from "@/lib/validation";
 import { splitCompoundInstruction, capitalizeInstruction, normalizeInstructionList } from "@/lib/text";
+import { generateCrochetProjectPipeline } from "@/lib/ai/generateCrochetProject";
+import { buildFallbackProject } from "@/lib/ai/fallbackProject";
 import type {
   GeneratedCrochetProject,
   GenerationResult,
@@ -406,34 +407,6 @@ const normalizePart = (part: Partial<ParsedPart>, index: number): ParsedPart => 
   };
 };
 
-export const buildFallbackProject = (
-  patternText: string,
-  description = "Generated locally because AI response was unavailable.",
-): GeneratedCrochetProject => {
-  const rows = parsePattern(patternText).map((row, idx) => normalizeRow(row, idx));
-
-  return {
-    projectName: inferProjectName(patternText, 0),
-    summary: {
-      title: inferProjectName(patternText, 0),
-      description,
-      difficulty: null,
-      finishedSize: null,
-      tools: {
-        hookSize: null,
-        yarnType: null,
-        yarnWeight: null,
-        colors: [],
-      },
-      materials: [],
-      skills: [],
-      notes: [],
-    },
-    parts: null,
-    rows,
-  };
-};
-
 export const buildGenerationPayload = (
   project: GeneratedCrochetProject,
   generation: Omit<GenerationResult, "output"> & { output?: string },
@@ -577,162 +550,32 @@ export const hasGeminiApiKey = (): boolean => Boolean(readApiKey());
 export async function generateCrochetProject(
   patternText: string,
 ): Promise<{ project: GeneratedCrochetProject; generation: GenerationResult }> {
-  const cleaned = cleanRawPatternText(patternText);
-  const { text: trimmedPattern, length: inputLength } = preprocessPattern(cleaned);
-  const t0 = Date.now();
-  const logPhase = (label: string) => {
-    const elapsed = Date.now() - t0;
-    console.info(`[Gemini] ${label} +${elapsed}ms`);
-  };
-
-  const localPayload = (
-    status: GenerationResult["status"],
-    message: string,
-    debug?: string,
-  ) =>
-    buildGenerationPayload(
-      buildFallbackProject(trimmedPattern, message),
-      {
-        source: "local",
-        status,
-        message,
-        debug,
-        output: trimmedPattern,
-      },
-    );
-
-  if (!trimmedPattern) {
-    return localPayload("parse_fallback", "Generated locally because the pattern was empty.", "Empty input");
-  }
-
-  logPhase(`Clean + preprocess finished. Input size: ${inputLength}`);
-
-  // If running on the client, call the API route so the key stays server-side.
+  // Client: call API route for server-only Gemini usage
   if (typeof window !== "undefined") {
     try {
-      logPhase("Client calling /api/gemini");
       const res = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ patternText: trimmedPattern }),
+        body: JSON.stringify({ patternText }),
       });
-      const data = (await res.json()) as { project?: GeneratedCrochetProject; generation?: GenerationResult };
-      if (!res.ok || !data?.project || !data?.generation) {
-        const debug = !res.ok ? `API route status ${res.status}` : "Unexpected payload shape";
-        throw new Error(debug);
+      const payload = (await res.json()) as any;
+      if (!res.ok || !payload?.project || !payload?.generation) {
+        throw new Error(payload?.error || `API route status ${res.status}`);
       }
-      logPhase("Client call succeeded");
-      return { project: data.project, generation: data.generation };
-    } catch (err) {
-      console.error("[Gemini] Client call failed", err);
-      return localPayload(
-        "gemini_error",
-        "Generated locally because Gemini request failed.",
-        err instanceof Error ? err.message : "Unknown client error",
-      );
-    }
-  }
-
-  // Server-side direct call with secret key.
-  const apiKey = readApiKey();
-  if (!apiKey) {
-    return localPayload("missing_api_key", "Generated locally because API key is missing.");
-  }
-
-  let lastError: Error | null = null;
-  for (let attempt = 0; attempt <= DEFAULT_MAX_RETRIES; attempt += 1) {
-    try {
-      console.info(
-        "[Gemini] Server request attempt",
-        attempt + 1,
-        "Has key:",
-        Boolean(apiKey),
-        "Input size:",
-        inputLength,
-      );
-
-      const controller = REQUEST_TIMEOUT_MS > 0 ? new AbortController() : undefined;
-      if (controller) {
-        setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-      }
-
-      logPhase(`Attempt ${attempt + 1}: Gemini request start`);
-
-      const response = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller?.signal,
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: `${GEMINI_PROMPT}\n\nPattern:\n${trimmedPattern}`,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-            responseJsonSchema: CROCHET_PROJECT_SCHEMA,
-          },
-        }),
-      });
-
-      logPhase(`Attempt ${attempt + 1}: Gemini response received`);
-      if (!response.ok) throw new Error(`Gemini API request failed with status ${response.status}.`);
-      const payload = (await response.json()) as unknown;
-      logPhase(`Attempt ${attempt + 1}: Gemini payload parsed`);
-      const responseText = extractTextResponse(payload);
-      if (!responseText) {
-        return localPayload("empty_ai_response", "Generated locally because Gemini returned an empty response.");
-      }
-      try {
-        logPhase(`Attempt ${attempt + 1}: Parsing project start`);
-        const { project, usedFallback } = parseAndValidateGeneratedProject(responseText, trimmedPattern);
-        if (usedFallback) {
-          logPhase(`Attempt ${attempt + 1}: Parsed with fallback`);
-          return buildGenerationPayload(project, {
-            source: "local",
-            status: "parse_fallback",
-            message: "Generated locally because the AI response could not be parsed.",
-            debug: "Validation failed; used local parser",
-          });
-        }
-        logPhase(`Attempt ${attempt + 1}: Parsing finished successfully`);
-        return buildGenerationPayload(project, {
-          source: "gemini",
-          status: "success",
-          message: "Generated with Gemini",
-          debug: undefined,
-        });
-      } catch (error) {
-        console.error("[Gemini] Parse error. raw responseText length:", responseText.length);
-        throw error;
-      }
+      return { project: payload.project, generation: payload.generation };
     } catch (error) {
-      if ((error as any)?.name === "AbortError") {
-        console.error("[Gemini] Request aborted", attempt + 1);
-        return localPayload(
-          "gemini_error",
-          "Generated locally because the Gemini request was aborted.",
-          "Gemini request aborted",
-        );
-      }
-      lastError = error instanceof Error ? error : new Error("Unknown Gemini error");
-      console.error("[Gemini] Error attempt", attempt + 1, error);
-      if (attempt < DEFAULT_MAX_RETRIES) {
-        await wait(400 * (attempt + 1));
-        continue;
-      }
+      console.error("[Gemini] Client call failed", error);
+      const project = buildFallbackProject(patternText, "Generated locally because Gemini request failed.");
+      return buildGenerationPayload(project, {
+        source: "local",
+        status: "gemini_error",
+        message: "Generated locally because Gemini request failed.",
+        debug: error instanceof Error ? error.message : "client error",
+      });
     }
   }
 
-  if (lastError) console.error(lastError);
-  return localPayload(
-    "gemini_error",
-    "Generated locally because Gemini request failed.",
-    lastError?.message,
-  );
+  // Server: call pipeline directly
+  const pipeline = await generateCrochetProjectPipeline(patternText);
+  return buildGenerationPayload(pipeline.project, pipeline.generation);
 }
