@@ -5,9 +5,10 @@ import type { GenerationResult } from "@/types/project";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
+  let patternText: string = "";
   try {
     const body = await req.json();
-    const patternText = typeof body?.patternText === "string" ? body.patternText : "";
+    patternText = typeof body?.patternText === "string" ? body.patternText : "";
     console.info(
       "[Gemini API Route] Has key:",
       Boolean(process.env.GEMINI_API_KEY),
