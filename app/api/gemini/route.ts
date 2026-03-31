@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { generateCrochetProject } from "@/lib/gemini";
+import { buildFallbackProject, buildGenerationPayload, generateCrochetProject } from "@/lib/gemini";
+import type { GenerationResult } from "@/types/project";
 
 export const runtime = "nodejs";
 
@@ -28,9 +29,15 @@ export async function POST(req: Request) {
     return NextResponse.json(payload);
   } catch (error) {
     console.error("[Gemini API Route] Error:", error);
-    return NextResponse.json(
-      { error: "Failed to process pattern" },
-      { status: 500 },
-    );
+    const fallbackProject = buildFallbackProject(patternText ?? "", "Generated locally because the Gemini API route failed.");
+    const generation: GenerationResult = {
+      source: "local",
+      status: "gemini_error",
+      message: "Generated locally because the Gemini API route failed.",
+      debug: error instanceof Error ? error.message : "Unknown route error",
+      output: patternText ?? "",
+    };
+    const payload = buildGenerationPayload(fallbackProject, generation);
+    return NextResponse.json(payload, { status: 200 });
   }
 }

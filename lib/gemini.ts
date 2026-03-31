@@ -14,7 +14,8 @@ import type {
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const DEFAULT_MAX_RETRIES = 2;
-const REQUEST_TIMEOUT_MS = 12000;
+// Timeout disabled per user request; keep constant in case we need to restore quickly.
+const REQUEST_TIMEOUT_MS = 0;
 
 const CROCHET_PROJECT_SCHEMA = {
   type: "object",
@@ -354,7 +355,7 @@ const normalizePart = (part: Partial<ParsedPart>, index: number): ParsedPart => 
   };
 };
 
-const buildFallbackProject = (
+export const buildFallbackProject = (
   patternText: string,
   description = "Generated locally because AI response was unavailable.",
 ): GeneratedCrochetProject => {
@@ -382,7 +383,7 @@ const buildFallbackProject = (
   };
 };
 
-const buildGenerationPayload = (
+export const buildGenerationPayload = (
   project: GeneratedCrochetProject,
   generation: Omit<GenerationResult, "output"> & { output?: string },
 ) => ({
@@ -563,13 +564,13 @@ export async function generateCrochetProject(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ patternText: trimmedPattern }),
       });
-      if (!res.ok) throw new Error(`Gemini API route failed: ${res.status}`);
-      const data = (await res.json()) as { project: GeneratedCrochetProject; generation: GenerationResult };
-      if (!data?.project || !data?.generation) {
-        throw new Error("Gemini API route returned unexpected shape");
+      const data = (await res.json()) as { project?: GeneratedCrochetProject; generation?: GenerationResult };
+      if (!res.ok || !data?.project || !data?.generation) {
+        const debug = !res.ok ? `API route status ${res.status}` : "Unexpected payload shape";
+        throw new Error(debug);
       }
       logPhase("Client call succeeded");
-      return data;
+      return { project: data.project, generation: data.generation };
     } catch (err) {
       console.error("[Gemini] Client call failed", err);
       return localPayload(
@@ -598,19 +599,17 @@ export async function generateCrochetProject(
         inputLength,
       );
 
-      const controller = new AbortController();
-      let timedOut = false;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, REQUEST_TIMEOUT_MS);
+      const controller = REQUEST_TIMEOUT_MS > 0 ? new AbortController() : undefined;
+      if (controller) {
+        setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      }
 
       logPhase(`Attempt ${attempt + 1}: Gemini request start`);
 
       const response = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
+        signal: controller?.signal,
         body: JSON.stringify({
           contents: [
             {
@@ -628,15 +627,6 @@ export async function generateCrochetProject(
           },
         }),
       });
-      clearTimeout(timeout);
-      if (timedOut) {
-        logPhase(`Attempt ${attempt + 1}: Gemini response ignored after timeout`);
-        return localPayload(
-          "gemini_timeout",
-          "Generated locally because the Gemini request timed out.",
-          "Gemini request exceeded timeout",
-        );
-      }
 
       logPhase(`Attempt ${attempt + 1}: Gemini response received`);
       if (!response.ok) throw new Error(`Gemini API request failed with status ${response.status}.`);
@@ -671,15 +661,13 @@ export async function generateCrochetProject(
       }
     } catch (error) {
       if ((error as any)?.name === "AbortError") {
-        clearTimeout(timeout);
-        console.error("[Gemini] Timeout attempt", attempt + 1);
+        console.error("[Gemini] Request aborted", attempt + 1);
         return localPayload(
-          "gemini_timeout",
-          "Generated locally because the Gemini request timed out.",
-          "Gemini request exceeded timeout",
+          "gemini_error",
+          "Generated locally because the Gemini request was aborted.",
+          "Gemini request aborted",
         );
       }
-      clearTimeout(timeout);
       lastError = error instanceof Error ? error : new Error("Unknown Gemini error");
       console.error("[Gemini] Error attempt", attempt + 1, error);
       if (attempt < DEFAULT_MAX_RETRIES) {
