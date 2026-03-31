@@ -45,9 +45,9 @@ const normalizeInstruction = (raw: any, fallbackId: string, fallbackText: string
 const normalizeRow = (raw: any, idx: number): ParsedRow => {
   const rowNumber = typeof raw?.rowNumber === "number" ? raw.rowNumber : idx + 1;
   const orig = typeof raw?.originalRowText === "string" ? raw.originalRowText : "";
-  const instructionsRaw = Array.isArray(raw?.instructions) ? raw.instructions : [];
+  const instructionsRaw: any[] = Array.isArray(raw?.instructions) ? raw.instructions : [];
   const base = instructionsRaw.length
-    ? instructionsRaw.map((ins: any, i: number) => normalizeInstruction(ins, `row-${rowNumber}-step-${i + 1}`, orig || `Row ${rowNumber}`))
+    ? instructionsRaw.map((ins, i: number) => normalizeInstruction(ins, `row-${rowNumber}-step-${i + 1}`, orig || `Row ${rowNumber}`))
     : [normalizeInstruction({}, `row-${rowNumber}-step-1`, orig || `Row ${rowNumber}`)];
   const instructions = dedupeConsecutive(base, (i) => i.text.human);
   return {
@@ -63,16 +63,17 @@ const normalizeRow = (raw: any, idx: number): ParsedRow => {
 };
 
 const normalizePart = (raw: any, index: number): ParsedPart => {
-  const rows = Array.isArray(raw?.rows) ? raw.rows.map((r: any, i: number) => normalizeRow(r, i)) : [];
+  const rows: any[] = Array.isArray(raw?.rows) ? raw.rows : [];
+  const normalizedRows = rows.map((r, i: number) => normalizeRow(r, i));
   return {
     name: typeof raw?.name === "string" ? raw.name : `Part ${index + 1}`,
     partIndex: typeof raw?.partIndex === "number" ? raw.partIndex : index + 1,
     description: typeof raw?.description === "string" ? raw.description : "",
     details: {
-      rowCount: typeof raw?.details?.rowCount === "number" ? raw.details.rowCount : rows.length,
+      rowCount: typeof raw?.details?.rowCount === "number" ? raw.details.rowCount : normalizedRows.length,
       notes: Array.isArray(raw?.details?.notes) ? raw.details.notes.filter((n: any) => typeof n === "string") : [],
     },
-    rows,
+    rows: normalizedRows,
   };
 };
 
@@ -114,7 +115,7 @@ export const normalizeGeminiProject = (
 
   const rows = !parts
     ? (Array.isArray(parsed?.rows) && parsed.rows.length > 0
-        ? parsed.rows.map((r: any, i: number) => normalizeRow(r, i))
+        ? (parsed.rows as any[]).map((r, i: number) => normalizeRow(r, i))
         : null)
     : null;
 
@@ -136,4 +137,3 @@ export const normalizeGeminiProject = (
 
 // Local fallback imported lazily to avoid cycles
 import { buildFallbackProject } from "./fallbackProject";
-
