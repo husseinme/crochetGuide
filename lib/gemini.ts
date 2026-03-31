@@ -181,17 +181,24 @@ const CROCHET_PROJECT_SCHEMA = {
   required: ["projectName", "summary", "parts", "rows"],
 } as const;
 
-const GEMINI_PROMPT = `Convert this crochet pattern into structured JSON.
+const GEMINI_PROMPT = `Convert this LONG crochet pattern into structured JSON.
 
 Return JSON only (no markdown). Keys required: projectName, summary, parts or rows, repeat metadata, instructions with text.human and text.abbreviated.
 
-Rules:
-- Only create parts when the pattern names them (Head, Body, Arms, Border, Assembly, etc.). Else set parts=null and use rows.
-- Expand row ranges and repeats when counts are clear; include repeatGroupId, repeatIndex, repeatTotal.
-- Each instruction must be a complete, standalone action; no orphan fragments. Use concise human text and an abbreviated crochet shorthand.
-- Remove non-pattern filler (copyright, links, tutorials, duplicate languages).
-- Extract stitch counts when present; otherwise null.
-- If parsing fails, keep rows as best-effort line splits.
+Important cleanup rules:
+- Ignore copyright, promotional text, repeated headers/footers, website/order info, duplicate title blocks, abbreviation glossaries, and disclaimers.
+- Keep only content that directly helps crochet the project: title, materials/tools, notes that affect execution, named sections (e.g., BOTTLE COZY, STRAP, FINISHING), and the actual rows/rounds.
+
+Row and repeat rules:
+- Detect and expand finite repeats such as "Rnds 26-33: Rep Rnd 18-25" or "Rnds 34 and 35: Rep Rnd 18 twice" into explicit rows with repeat metadata (repeatGroupId, repeatIndex, repeatTotal).
+- For open-ended repeats like "Rep Row 2 until desired length", do NOT invent counts; keep a repeatable instruction row that explains the condition.
+- Preserve real section names; only use parts when the pattern names them. Otherwise set parts=null and use rows.
+
+Instruction rules:
+- Each instruction must be a complete, standalone action; no orphan fragments. Provide text.human (clear) and text.abbreviated (concise shorthand).
+- Interpret crochet shorthand using context; keep stitch counts when present, else null.
+
+If any section is unclear, still return a usable partial project (summary + best-effort parts/rows) rather than failing.
 `;
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -213,6 +220,50 @@ const preprocessPattern = (patternText: string): { text: string; length: number 
   const trimmed = patternText.trim();
   // Keep full text; only trim outer whitespace.
   return { text: trimmed, length: trimmed.length };
+};
+
+export const cleanRawPatternText = (input: string): string => {
+  const lines = input.split(/\r?\n/);
+  const filtered: string[] = [];
+  const footerPatterns = [
+    /all rights reserved/i,
+    /lion brand/i,
+    /copyright/i,
+    /pattern number/i,
+    /printing/i,
+    /customer service/i,
+    /sku/i,
+    /purchase/i,
+    /order/i,
+  ];
+  let skipAbbrev = false;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const lower = line.toLowerCase();
+    if (!line) {
+      filtered.push("");
+      continue;
+    }
+    if (/^abbreviations[:]?/i.test(line)) {
+      skipAbbrev = true;
+      continue;
+    }
+    if (skipAbbrev) {
+      if (/^notes[:]?/i.test(line) || /^pattern/i.test(line) || /^rnds?/i.test(line) || /^row/i.test(line)) {
+        skipAbbrev = false;
+      } else {
+        continue;
+      }
+    }
+    if (footerPatterns.some((re) => re.test(line))) continue;
+    if (/^page \d+/i.test(line)) continue;
+    if (/^print/i.test(line)) continue;
+    filtered.push(line);
+  }
+
+  const deduped = filtered.filter((line, idx, arr) => !(line && idx > 0 && line === arr[idx - 1]));
+  return deduped.join("\n");
 };
 
 const normalizeInstruction = (
@@ -526,7 +577,8 @@ export const hasGeminiApiKey = (): boolean => Boolean(readApiKey());
 export async function generateCrochetProject(
   patternText: string,
 ): Promise<{ project: GeneratedCrochetProject; generation: GenerationResult }> {
-  const { text: trimmedPattern, length: inputLength } = preprocessPattern(patternText);
+  const cleaned = cleanRawPatternText(patternText);
+  const { text: trimmedPattern, length: inputLength } = preprocessPattern(cleaned);
   const t0 = Date.now();
   const logPhase = (label: string) => {
     const elapsed = Date.now() - t0;
@@ -553,7 +605,7 @@ export async function generateCrochetProject(
     return localPayload("parse_fallback", "Generated locally because the pattern was empty.", "Empty input");
   }
 
-  logPhase(`Preprocess finished. Input size: ${inputLength}`);
+  logPhase(`Clean + preprocess finished. Input size: ${inputLength}`);
 
   // If running on the client, call the API route so the key stays server-side.
   if (typeof window !== "undefined") {
